@@ -1,6 +1,9 @@
-# This is a PFM/PHM image viewer desktop application.
+# PFM/PHM image viewer desktop application
 
-Using Nana++ GUI library.
+PFM stands for Portable FloatMap Image Format, as specified by https://www.pauldebevec.com/Research/HDR/PFM/
+PHM is the half-float variant as used by intel open image denoise library.
+
+This software is a C++ desktop app made with Nana++ GUI library.
 It is built with subsystem:console on windows so it can accept piped data to stdin.
 
 ## Usage:
