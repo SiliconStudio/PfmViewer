@@ -14,8 +14,11 @@
 #include <nana/gui/widgets/label.hpp>
 #include <nana/gui/widgets/button.hpp>
 #include <nana/gui/widgets/group.hpp>
+#include <nana/gui/widgets/picture.hpp>
 #include <nana/gui/filebox.hpp>
 #include <nana/gui/msgbox.hpp>
+#include <nana/paint/graphics.hpp>
+
 
 namespace fs = std::filesystem;
 using std::vector;
@@ -48,6 +51,13 @@ msgbox message(std::string const& title, msgbox::icon_t ico, msgbox::button_t bt
     msgbox m({}, title, btn);
     m.icon(ico);
     return m;
+}
+
+// using uint8 in ispc causes performance warnings so we use int8 on -128,127 range
+// this function is the remap
+uint8_t stou(int8_t i)
+{
+    return uint8_t((int)i + 128);
 }
 
 //#include <windows.h>
@@ -105,19 +115,42 @@ int main(int argc, char* argv[])
     raw.resize(alloc);
 
     std::cout << "about to read " << alloc << " bytes\n";
-
-    // go in binary mode from here
-    freopen(nullptr, "rb", stdin);
+    in->ignore(1);  // jump the last \n after scale_endian
+    freopen(nullptr, "rb", stdin);  // go in binary mode from here
     in->sync_with_stdio();
-    *in >> std::noskipws;
-
-    // read bulk
+    // read bulk:
     in->read(raw.data(), alloc);
 
     if (auto cnt = in->gcount(); cnt != alloc)
         std::cout << "not enough data read (" << cnt << " instead of " << alloc << " expected)\n";
     else if (std::cin.rdbuf()->in_avail() > 0)
         std::cout << "remaining data not read " << std::cin.rdbuf()->in_avail() << "\n";
+
+    vector<int8_t> rgb;
+    rgb.resize(pfm.w * pfm.h * pfm.num_channels());
+    if (pfm.is_half())
+        ispc::ToneAllF16PixelsAndToGamma((uint16_t*)raw.data(), rgb.data(), raw.size() / 2, 1.f);
+    else
+        ispc::ToneAllF32PixelsAndToGamma((float*)raw.data(), rgb.data(), raw.size() / 4, 1.f);
+
+    paint::graphics g(size(pfm.w, pfm.h));
+    auto rgb_it = rgb.begin();
+    if (pfm.num_channels() == 3)
+        for (int y = 0; y < pfm.h; ++y)
+            for (int x = 0; x < pfm.w; ++x)
+            {
+                g.set_pixel(x, y, {stou(*rgb_it), stou(*(rgb_it + 1)), stou(*(rgb_it + 2))});
+                rgb_it += 3;
+            }
+    else
+        for (int y = 0; y < pfm.h; ++y)
+            for (int x = 0; x < pfm.w; ++x)
+            {
+                uint8_t bw{stou(*rgb_it)};
+                g.set_pixel(x, y, {bw, bw, bw});
+                ++rgb_it;
+            }
+
 
     form   fm;                             // Our main window
     fm.caption("My first NANA demo");       // (with this title)
@@ -146,25 +179,21 @@ int main(int argc, char* argv[])
                            API::exit();           // or really quick
                        });
     act.radio_mode(true);                   // Set "radio mode" (only one option selected)
-      // let divide fm into fields to holds the other controls.
-      // for example, let split fm into two fields separated by a movable vertical barre.
+    picture p{fm};
+    drawing d{p};
+    d.draw([&](paint::graphics& a_g)
+           {
+               a_g.bitblt(rectangle({0, 0}, a_g.size()), g, {0,0});
+           });
+    // let divide fm into fields to holds the other controls.
+    // for example, let split fm into two fields separated by a movable vertical barre.
     fm_place.div("vertical <label margin=10>|70% <actions>");
     fm_place["label"] << hello << btn;        // and place the controls there
-    fm_place["actions"] << act;
+    fm_place["actions"] << act << p;
     fm_place.collocate();                      // and collocate all in place
+
     fm.show();
     exec();
-
-    static const size_t s = 4 * 3;
-    float vin[s];
-    int8_t vout[s];
-    for (int i = 0; i < s; ++i)
-        vin[i] = rand() / 5000.f;
-
-    ispc::ToneAllPixels(vin, vout, s, 1.f);
-
-    for (int i = 0; i < s; ++i)
-        printf("%d: posttone(%f) = %d\n", i, vin[i], vout[i] + 128);
 
     return 0;
 }

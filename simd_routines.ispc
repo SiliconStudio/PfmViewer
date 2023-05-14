@@ -47,12 +47,30 @@ export void ToneAllPixels(uniform float vin[], uniform int8 vout[], uniform int 
     }
 }
 
+export void ToneAllF16Pixels(uniform uint16 vin[], uniform int8 vout[], uniform int count, uniform float exposure)
+{
+    foreach (index = 0 ... count)
+    {
+        float v = half_to_float(vin[index]);
+        vout[index] = min(255.f, 255 * ToneComponent(v, exposure)) - 128;
+    }
+}
+
 // expose, downtone, and gamma-ify
-export void ToneAllPixelsAndToGamma(uniform float vin[], uniform int8 vout[], uniform int count, uniform float exposure)
+export void ToneAllF32PixelsAndToGamma(uniform float vin[], uniform int8 vout[], uniform int count, uniform float exposure)
 {
     foreach (index = 0 ... count)
     {
         float v = vin[index];
+        vout[index] = min(255.f, 255 * ToneComponentAndToGamma(v, exposure)) - 128;
+    }
+}
+
+export void ToneAllF16PixelsAndToGamma(uniform uint16 vin[], uniform int8 vout[], uniform int count, uniform float exposure)
+{
+    foreach (index = 0 ... count)
+    {
+        float v = half_to_float(vin[index]);
         vout[index] = min(255.f, 255 * ToneComponentAndToGamma(v, exposure)) - 128;
     }
 }
