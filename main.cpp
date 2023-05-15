@@ -15,9 +15,18 @@
 #include <nana/gui/widgets/button.hpp>
 #include <nana/gui/widgets/group.hpp>
 #include <nana/gui/widgets/picture.hpp>
+#include <nana/gui/widgets/slider.hpp>
 #include <nana/gui/filebox.hpp>
 #include <nana/gui/msgbox.hpp>
 #include <nana/paint/graphics.hpp>
+
+#ifdef _WIN32
+#define WINONLY(x) x
+#include <io.h>
+#include <fcntl.h>
+#else
+#define WINONLY(x)
+#endif
 
 
 namespace fs = std::filesystem;
@@ -60,7 +69,12 @@ uint8_t stou(int8_t i)
     return uint8_t((int)i + 128);
 }
 
-//#include <windows.h>
+struct app_state
+{
+    float exposure = 1.f;
+    bool gamma = true;
+    bool flipy = false;
+};
 
 int main(int argc, char* argv[])
 {
@@ -117,7 +131,9 @@ int main(int argc, char* argv[])
     std::cout << "about to read " << alloc << " bytes\n";
     in->ignore(1);  // jump the last \n after scale_endian
     freopen(nullptr, "rb", stdin);  // go in binary mode from here
-    in->sync_with_stdio();
+    WINONLY(_setmode(fileno(stdin), O_BINARY));
+    in->sync();
+    *in >> std::noskipws;
     // read bulk:
     in->read(raw.data(), alloc);
 
@@ -133,13 +149,13 @@ int main(int argc, char* argv[])
     else
         ispc::ToneAllF32PixelsAndToGamma((float*)raw.data(), rgb.data(), raw.size() / 4, 1.f);
 
-    paint::graphics g(size(pfm.w, pfm.h));
+    paint::graphics surface(size(pfm.w, pfm.h));
     auto rgb_it = rgb.begin();
     if (pfm.num_channels() == 3)
         for (int y = 0; y < pfm.h; ++y)
             for (int x = 0; x < pfm.w; ++x)
             {
-                g.set_pixel(x, y, {stou(*rgb_it), stou(*(rgb_it + 1)), stou(*(rgb_it + 2))});
+                surface.set_pixel(x, y, {stou(*rgb_it), stou(*(rgb_it + 1)), stou(*(rgb_it + 2))});
                 rgb_it += 3;
             }
     else
@@ -147,52 +163,34 @@ int main(int argc, char* argv[])
             for (int x = 0; x < pfm.w; ++x)
             {
                 uint8_t bw{stou(*rgb_it)};
-                g.set_pixel(x, y, {bw, bw, bw});
+                surface.set_pixel(x, y, {bw, bw, bw});
                 ++rgb_it;
             }
 
+    app_state state;
 
-    form   fm;                             // Our main window
-    fm.caption("My first NANA demo");       // (with this title)
-    place  fm_place{fm};                    // have automatic layout
-    bool   really_quick{false};             // and a default behavior
-    label  hello{fm,"Hello World"};         // We put a label on our window
-    button btn{fm,"Quit"};                // and a button
-    btn.tooltip("I will ask first");       // that show a tip upon mouse hover
-    group  act{fm, "Actions"};            // Add a group of "options"
-    act.add_option("Quick quickly")         // and two options that control quick behavior
-        .events().click([&]() {   really_quick = true;
-    btn.tooltip("Quick quickly");       });
-    act.add_option("Ask first")
-        .events().click([&]() {   really_quick = false;
-    btn.tooltip("I will ask first");    });
-    btn.events().click([&]()               // now the button know how to respond
-                       {
-                           if (!really_quick)     // not really quick !
-                           {
-                               msgbox m(fm, "Our demo", msgbox::yes_no);
-                               m.icon(m.icon_question);
-                               m << "Are you sure you want to quick?";
-                               auto response = m();
-                               if (response != m.pick_yes) return;   // return to the demo
-                           }
-                           API::exit();           // or really quick
-                       });
-    act.radio_mode(true);                   // Set "radio mode" (only one option selected)
-    picture p{fm};
-    drawing d{p};
-    d.draw([&](paint::graphics& a_g)
+    // main window
+    form mainw{API::make_center(std::min(pfm.w, 1600) + 200, std::min(pfm.h, 1000))};
+    mainw.caption("Silicon Studio PFM/PHM viewer");
+    place layout{mainw};
+    group act{mainw, "Options"};
+    act.add_option("Gamma").events().click([&]() { state.gamma = !state.gamma; });
+    act.add_option("Flip Y").events().click([&]() { state.flipy = !state.flipy; });
+    act.radio_mode(false);
+    slider exp{mainw};
+    exp.caption("exposure");
+    picture pic{mainw};
+    drawing dr{pic};
+    dr.draw([&](paint::graphics& a_g)
            {
-               a_g.bitblt(rectangle({0, 0}, a_g.size()), g, {0,0});
+               a_g.bitblt(rectangle({0, 0}, a_g.size()), surface, {0,0});
            });
-    // let divide fm into fields to holds the other controls.
-    // for example, let split fm into two fields separated by a movable vertical barre.
-    fm_place.div("vertical <label margin=10>|70% <actions>");
-    fm_place["label"] << hello << btn;        // and place the controls there
-    fm_place["actions"] << act << p;
-    fm_place.collocate();                      // and collocate all in place
+    layout.div("<picdisplay>|200<vert controls arrange=[150,150,50]>");
+    layout["picdisplay"] << pic;
+    layout["controls"] << act << exp;
+    layout.collocate();
 
-    fm.show();
+    mainw.show();
     exec();
 
     return 0;
