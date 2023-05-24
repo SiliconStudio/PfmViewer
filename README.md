@@ -12,6 +12,21 @@ It is built with subsystem:console on windows so it can accept piped data to std
 one argument for file name (or optionally - (dash) to indicate stdin)
 If no arguments: it will probe for stdin pending data, or open a filebox dialog picker if no pending data on stdin.
 
+## Create .pfm
+
+Use that snippet to output (usually linear space) float-RGB images from your software:
+
+```cpp
+    // export to PHM:
+    std::ofstream f{"hdrimg.phm", std::ios::out | std::ios::binary};
+    f << "PH\n";   // capital H = 3 channels of halfs
+    f << resolutionX << " " << resolutionY << "\n";
+    f << "-1.0\n";  // scale and endian (neg=little)
+    f.write((const char*)rowmajorHalfRgbImageData, resolutionX * resolutionY * 3 * 2);
+```
+
+Or `PF` for 32bits floats. `Pf` for monochrome. You get the idea.
+
 ## Build:
 
  - install ispc (version 1.18.0 was used for dev) https://ispc.github.io/downloads.html

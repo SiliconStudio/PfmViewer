@@ -4,6 +4,7 @@
 // BSD License
 
 #include <iostream>
+#include <ios>
 #include <fstream>
 #include <iterator>
 #include <string_view>
@@ -62,8 +63,14 @@ msgbox message(std::string const& title, msgbox::icon_t ico, msgbox::button_t bt
     return m;
 }
 
+void data_bind(checkbox& cb, bool& data)
+{
+    cb.check(data);
+    cb.events().click([&]() { data = cb.checked(); });
+}
+
 // using uint8 in ispc causes performance warnings so we use int8 on -128,127 range
-// this function is the remap
+// this function is the "signed to unsigned" remap
 uint8_t stou(int8_t i)
 {
     return uint8_t((int)i + 128);
@@ -73,6 +80,7 @@ struct app_state
 {
     float exposure = 1.f;
     bool gamma = true;
+    bool tone = true;
     bool flipy = false;
 };
 
@@ -85,7 +93,10 @@ int main(int argc, char* argv[])
     //Sleep(10000);
 
     if ((argc >= 2 && argv[1][0] == '-') || pending_data(std::cin))  // input is piped on stdin?
+    {
         in = &std::cin;
+        in->rdbuf()->pubsetbuf(nullptr, 0);  // deactivate buffering otherwise the stream explodes with failbit after 3450 bytes read
+    }
     else if (argc <= 1)  // no command line -> open file dialog
     {
         filebox picker{nullptr, true};
@@ -107,40 +118,53 @@ int main(int argc, char* argv[])
 
     if (!in || !*in) return 0; // no good input
 
+    in->exceptions(std::ifstream::failbit | std::ifstream::badbit); // instant give up in case of issues
+
     pfm_header pfm;
-    *in >> pfm.magic >> pfm.w >> pfm.h >> pfm.scale_endian;
-
-    std::cout << "magic:" << pfm.magic << " w:" << pfm.w << " h:" << pfm.h << " scale_endian: " << pfm.scale_endian << "\n";
-
-    size_t alloc = pfm.calc_raw_size();
-    if (alloc == 0)
-    {
-        (message("No data", msgbox::icon_information, msgbox::ok) << "Width and height are 0 or not found")();
-        return 2;
-    }
-    if (alloc > 1'000'000'000)
-    {
-        (message("Calculated image size too large", msgbox::icon_error, msgbox::ok)
-            << "More than 1GiB of data needed because of parsed width:" << pfm.w << " and height:" << pfm.h)();
-        return 3;
-    }
-
     vector<char> raw;
-    raw.resize(alloc);
+    try
+    {
+        *in >> pfm.magic >> pfm.w >> pfm.h >> pfm.scale_endian;
 
-    std::cout << "about to read " << alloc << " bytes\n";
-    in->ignore(1);  // jump the last \n after scale_endian
-    freopen(nullptr, "rb", stdin);  // go in binary mode from here
-    WINONLY(_setmode(fileno(stdin), O_BINARY));
-    in->sync();
-    *in >> std::noskipws;
-    // read bulk:
-    in->read(raw.data(), alloc);
+        std::cout << "magic:" << pfm.magic << " w:" << pfm.w << " h:" << pfm.h << " scale_endian: " << pfm.scale_endian << "\n";
 
-    if (auto cnt = in->gcount(); cnt != alloc)
-        std::cout << "not enough data read (" << cnt << " instead of " << alloc << " expected)\n";
-    else if (std::cin.rdbuf()->in_avail() > 0)
-        std::cout << "remaining data not read " << std::cin.rdbuf()->in_avail() << "\n";
+        size_t alloc = pfm.calc_raw_size();
+        if (alloc == 0)
+        {
+            (message("No data", msgbox::icon_information, msgbox::ok) << "Width and height are 0 or not found")();
+            return 2;
+        }
+        if (alloc > 1'000'000'000)
+        {
+            (message("Calculated image size too large", msgbox::icon_error, msgbox::ok)
+             << "More than 1GiB of data needed because of parsed width:" << pfm.w << " and height:" << pfm.h)();
+            return 3;
+        }
+
+        raw.resize(alloc);
+
+        std::cout << "about to read " << alloc << " bytes\n";
+        in->ignore(1);  // jump the last \n after scale_endian
+        *in >> std::noskipws;
+        in->clear();
+        freopen(nullptr, "rb", stdin);  // go in binary mode from here
+        WINONLY(_setmode(fileno(stdin), O_BINARY | O_RDONLY));
+        // read bulk:
+        in->sync();
+        in->read(raw.data(), alloc);
+
+        if (auto cnt = in->gcount(); cnt != alloc)
+            std::cout << "not enough data read (" << cnt << " instead of " << alloc << " expected)\n";
+        else if (std::cin.rdbuf()->in_avail() > 0)
+            std::cout << "remaining data not read " << std::cin.rdbuf()->in_avail() << "\n";
+        else 
+            std::cout << "success\n";
+    }
+    catch (std::exception& e)
+    {
+        (message("Exception in input stream", msgbox::icon_error, msgbox::ok) << e.what())();
+        return 4;
+    }
 
     vector<int8_t> rgb;
     rgb.resize(pfm.w * pfm.h * pfm.num_channels());
@@ -170,27 +194,42 @@ int main(int argc, char* argv[])
     app_state state;
 
     // main window
-    form mainw{API::make_center(std::min(pfm.w, 1600) + 200, std::min(pfm.h, 1000))};
-    mainw.caption("Silicon Studio PFM/PHM viewer");
-    place layout{mainw};
-    group act{mainw, "Options"};
-    act.add_option("Gamma").events().click([&]() { state.gamma = !state.gamma; });
-    act.add_option("Flip Y").events().click([&]() { state.flipy = !state.flipy; });
+    form mainwd{API::make_center(std::min(pfm.w, 1600) + 200, std::min(pfm.h, 1000))};
+    mainwd.caption("Silicon Studio PFM/PHM viewer");
+    group act{mainwd, "Options"};
+    data_bind(act.add_option("Gamma"), state.gamma);
+    data_bind(act.add_option("Filmic tone"), state.tone);
+    data_bind(act.add_option("Flip Y"), state.flipy);
     act.radio_mode(false);
-    slider exp{mainw};
+    slider exp{mainwd};
     exp.caption("exposure");
-    picture pic{mainw};
+    exp.events().value_changed([&]() { exp.value(); });
+    //panel_scrolled scrollzone{mainwd,
+    //    {0, 0, 1400, 1000},      // size and location of scrolling window on form
+    //    {0, 0, (unsigned)pfm.w, (unsigned)pfm.h}};   // size of base panel over which scrolling window moves
+    panel<false> panelZone{mainwd};
+    //panel<false> subpanel;
+    picture pic{panelZone};
+    nana::scroll<false> scrollH{panelZone};
+    nana::scroll<true> scrollV{panelZone};
+    place l2{panelZone};
+    l2.div("<vert <<sub><scrollV weight=16>> <scrollH weight=16>>");
+    l2["sub"] << pic;
+    l2["scrollV"] << scrollV;
+    l2["scrollH"] << scrollH;
+    l2.collocate();
     drawing dr{pic};
     dr.draw([&](paint::graphics& a_g)
            {
                a_g.bitblt(rectangle({0, 0}, a_g.size()), surface, {0,0});
            });
-    layout.div("<picdisplay>|200<vert controls arrange=[150,150,50]>");
-    layout["picdisplay"] << pic;
+    place layout{mainwd};
+    layout.div("<picdisplay>|200<vert controls arrange=[100,100,100]>");
+    layout["picdisplay"] << panelZone;
     layout["controls"] << act << exp;
     layout.collocate();
 
-    mainw.show();
+    mainwd.show();
     exec();
 
     return 0;
