@@ -18,6 +18,7 @@
 #include <nana/gui/widgets/group.hpp>
 #include <nana/gui/widgets/picture.hpp>
 #include <nana/gui/widgets/slider.hpp>
+#include <nana/gui/widgets/spinbox.hpp>
 #include <nana/gui/widgets/scroll.hpp>
 #include <nana/gui/filebox.hpp>
 #include <nana/gui/msgbox.hpp>
@@ -88,7 +89,7 @@ size min(size const& a, size const& b)
 
 struct app_settings
 {
-    float exposure = 1.f;
+    float exposure = 1.f;  // multiplier (not really EV)
     bool gamma = true;
     bool tone = true;
     bool flipy = false;
@@ -210,22 +211,25 @@ void raw_to_rgb(pfm_header const& pfm, vector<char> const& raw, vector<int8_t>& 
 // transfer signed-byte RGB image vector to a GUI-compatible surface
 void rgb_to_graphics(pfm_header const& pfm, vector<int8_t> const& rgb, paint::graphics& surface)
 {
-    auto rgb_it = rgb.begin();
     if (pfm.num_channels() == 3)
+    {
+        //#pragma omp parallel for schedule(static) // cannot be parallelized because .set_pixel is stateful and isn't using TLS
         for (int y = 0; y < pfm.h; ++y)
             for (int x = 0; x < pfm.w; ++x)
             {
-                surface.set_pixel(x, y, {stou(*rgb_it), stou(*(rgb_it + 1)), stou(*(rgb_it + 2))});
-                rgb_it += 3;
+                int8_t const* p = &rgb[3 * (y * pfm.w + x)];
+                surface.set_pixel(x, y, {stou(p[0]), stou(p[1]), stou(p[2])});
             }
+    }
     else
+    {
         for (int y = 0; y < pfm.h; ++y)
             for (int x = 0; x < pfm.w; ++x)
             {
-                uint8_t bw{stou(*rgb_it)};
+                uint8_t bw{stou(rgb[y * pfm.w + x])};
                 surface.set_pixel(x, y, {bw, bw, bw});
-                ++rgb_it;
             }
+    }
 }
 
 std::pair<float, float> min_max(pfm_header const& pfm, vector<char> const& raw)
@@ -270,18 +274,13 @@ int main(int argc, char* argv[])
     rgb_to_graphics(pfm, rgb, surface);
 
     // main window
-    form mainwd{API::make_center(std::min(pfm.w, 1600) + 200, std::min(pfm.h, 1000))};
-    mainwd.caption("Silicon Studio PFM/PHM viewer");
-    group act{mainwd, "Options"};
-    data_bind(act.add_option("Gamma"), state.gamma);
-    data_bind(act.add_option("Filmic tone"), state.tone);
-    data_bind(act.add_option("Flip Y"), state.flipy);
-    act.radio_mode(false);
-    slider exp{mainwd};
-    exp.caption("exposure");
-    exp.events().value_changed([&]() { exp.value(); });
-    label info{mainwd};
-    info.caption("range: " + std::to_string(rangemin) + ", " + std::to_string(rangemax));
+    static const int initial_width_right_pane = 200;
+    static const int initial_width_window = 1600;
+    static const int initial_height_window = 1000;
+    form mainwd{API::make_center(std::min(pfm.w, initial_width_window) + initial_width_right_pane,
+                                 std::min(pfm.h, initial_height_window))};
+    mainwd.caption("Silicon Studio PFM/PHM Viewer");
+    // image zone:
     panel<false> panelZone{mainwd};
     picture pic{panelZone};
     nana::scroll<false> scrollH{panelZone};
@@ -307,14 +306,87 @@ int main(int argc, char* argv[])
             });
     scrollH.events().value_changed([&]() { API::refresh_window(pic); });
     scrollV.events().value_changed([&]() { API::refresh_window(pic); });
+    // control panel zone:
+    group opts_gp{mainwd, "Options"};
+    data_bind(opts_gp.add_option("Gamma"), state.gamma);
+    data_bind(opts_gp.add_option("Filmic tone"), state.tone);
+    data_bind(opts_gp.add_option("Flip Y"), state.flipy);
+    opts_gp.radio_mode(false);
+    panel<false> ctrls{mainwd};
+    place ctrlgrid{ctrls};
+    label ev_lbl{ctrls};
+    ev_lbl.caption("exposure:");
+    slider ev_slider{ctrls};
+    ev_slider.maximum(200);
+    ev_slider.value(100);  // 1*100
+    label maxev_lbl{ctrls};
+    maxev_lbl.caption("ev-range max:");
+    spinbox maxev_spin{ctrls};
+    maxev_spin.range(0.0, 1000000.0, 0.1);
+    maxev_spin.value("2");
+    maxev_spin.events().text_changed([&]()
+                                     {
+                                         ev_slider.maximum(100 * maxev_spin.to_double());
+                                     });
+    ctrlgrid.div("<ctrlgrid grid=[2,2]>");
+    ctrlgrid["ctrlgrid"] << ev_lbl << ev_slider << maxev_lbl << maxev_spin;
+    ctrlgrid.collocate();
+    label curexp_lbl{mainwd};
+    auto refresh_curexp_lbl = [&]() {curexp_lbl.caption("EV: " + std::to_string(state.exposure)); };
+    refresh_curexp_lbl();
+
+    std::mutex m;
+    std::condition_variable cv;
+    bool dirty = false;
+    bool quit = false;
+
+    // we need a thread because HDC pixel transfer is slow
+    auto image_recomputer = [&]()
+    {
+        for (;;)
+        {
+            {
+                std::unique_lock lk(m);
+                cv.wait(lk, [&] {return dirty || quit; });
+                dirty = false;
+                if (quit) return;
+            }
+            raw_to_rgb(pfm, raw, rgb, state);
+            rgb_to_graphics(pfm, rgb, surface);
+            API::refresh_window(pic);
+        }
+    };
+    // use std thread. nana::thread::pool thing is horrendous and super slow. don't use it.
+    std::thread worker(image_recomputer);
+
+    ev_slider.events().value_changed([&]()
+                                     {
+                                         state.exposure = ev_slider.value() / 100.f;
+                                         refresh_curexp_lbl();
+                                         {
+                                             std::lock_guard lk(m);
+                                             dirty = true;
+                                         }
+                                         cv.notify_one();
+                                     });
+    label info{mainwd};
+    info.caption("source range: " + std::to_string(rangemin) + ", " + std::to_string(rangemax));
     place layout{mainwd};
-    layout.div("<picdisplay>|200<vert controls arrange=[100,100,100]>");
+    layout.div("<picdisplay>|200<vert controls arrange=[100,64,24,24]>");
     layout["picdisplay"] << panelZone;
-    layout["controls"] << act << exp << info;
+    layout["controls"] << opts_gp << ctrls << curexp_lbl << info;
     layout.collocate();
 
     mainwd.show();
     exec();
+
+    // stop the refresher thread otherwise we get an assert in the CRT
+    {
+        std::lock_guard lk(m);
+        quit = true;
+    }
+    cv.notify_one();
+    worker.join();
 
     return 0;
 }
