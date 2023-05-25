@@ -31,12 +31,12 @@
 #define WINONLY(x)
 #endif
 
-
 namespace fs = std::filesystem;
 using std::vector;
 using std::string_view;
 using namespace nana;
 
+// image metadata
 struct pfm_header
 {
     std::string magic;
@@ -50,6 +50,7 @@ struct pfm_header
     size_t calc_raw_size() const { return w * h * num_channels() * sizeof(float) / (is_half() ? 2 : 1); }
 };
 
+// check for input pipe, e.g: `$> PfmViewer.exe < file.pfm`
 bool pending_data(std::istream& is)
 {
     is.seekg(0, is.end);
@@ -58,6 +59,7 @@ bool pending_data(std::istream& is)
     return !(length < 0);
 }
 
+// one-liner helper
 msgbox message(std::string const& title, msgbox::icon_t ico, msgbox::button_t btn)
 {
     msgbox m({}, title, btn);
@@ -65,6 +67,7 @@ msgbox message(std::string const& title, msgbox::icon_t ico, msgbox::button_t bt
     return m;
 }
 
+// booleans to checkboxes
 void data_bind(checkbox& cb, bool& data)
 {
     cb.check(data);
@@ -78,12 +81,12 @@ uint8_t stou(int8_t i)
     return uint8_t((int)i + 128);
 }
 
-nana::size min(nana::size const& a, nana::size const& b)
+size min(size const& a, size const& b)
 {
     return {std::min(a.width, b.width), std::min(a.height, b.height)};
 }
 
-struct app_state
+struct app_settings
 {
     float exposure = 1.f;
     bool gamma = true;
@@ -91,13 +94,12 @@ struct app_state
     bool flipy = false;
 };
 
-int main(int argc, char* argv[])
+// do file prompting, or pipe/file parsing, and deserialize
+void load_pfm_and_raw(int argc /*in*/, char* argv[] /*in*/, pfm_header& pfm /*out*/, vector<char>& raw /*out*/)
 {
+    std::istream* in = nullptr;
     fs::path inpath;
     std::ifstream infile;
-    std::istream* in = nullptr;
-
-    //Sleep(10000);
 
     if ((argc >= 2 && argv[1][0] == '-') || pending_data(std::cin))  // input is piped on stdin?
     {
@@ -123,64 +125,91 @@ int main(int argc, char* argv[])
         in = &infile;
     }
 
-    if (!in || !*in) return 0; // no good input
+    if (!in || !*in) throw std::exception("no good input");
 
     in->exceptions(std::ifstream::failbit | std::ifstream::badbit); // instant give up in case of issues
 
-    pfm_header pfm;
-    vector<char> raw;
-    try
+    *in >> pfm.magic >> pfm.w >> pfm.h >> pfm.scale_endian;
+
+    std::cout << "magic:" << pfm.magic << " w:" << pfm.w << " h:" << pfm.h << " scale_endian: " << pfm.scale_endian << "\n";
+
+    size_t alloc = pfm.calc_raw_size();
+    if (alloc == 0)
     {
-        *in >> pfm.magic >> pfm.w >> pfm.h >> pfm.scale_endian;
-
-        std::cout << "magic:" << pfm.magic << " w:" << pfm.w << " h:" << pfm.h << " scale_endian: " << pfm.scale_endian << "\n";
-
-        size_t alloc = pfm.calc_raw_size();
-        if (alloc == 0)
-        {
-            (message("No data", msgbox::icon_information, msgbox::ok) << "Width and height are 0 or not found")();
-            return 2;
-        }
-        if (alloc > 1'000'000'000)
-        {
-            (message("Calculated image size too large", msgbox::icon_error, msgbox::ok)
-             << "More than 1GiB of data needed because of parsed width:" << pfm.w << " and height:" << pfm.h)();
-            return 3;
-        }
-
-        raw.resize(alloc);
-
-        std::cout << "about to read " << alloc << " bytes\n";
-        in->ignore(1);  // jump the last \n after scale_endian
-        *in >> std::noskipws;
-        in->clear();
-        freopen(nullptr, "rb", stdin);  // go in binary mode from here
-        WINONLY(_setmode(fileno(stdin), O_BINARY | O_RDONLY));
-        // read bulk:
-        in->sync();
-        in->read(raw.data(), alloc);
-
-        if (auto cnt = in->gcount(); cnt != alloc)
-            std::cout << "not enough data read (" << cnt << " instead of " << alloc << " expected)\n";
-        else if (std::cin.rdbuf()->in_avail() > 0)
-            std::cout << "remaining data not read " << std::cin.rdbuf()->in_avail() << "\n";
-        else 
-            std::cout << "success\n";
+        (message("No data", msgbox::icon_information, msgbox::ok) << "Width and height are 0 or not found")();
+        throw std::runtime_error("input data problem");
     }
-    catch (std::exception& e)
+    if (alloc > 1'000'000'000)
     {
-        (message("Exception in input stream", msgbox::icon_error, msgbox::ok) << e.what())();
-        return 4;
+        (message("Calculated image size too large", msgbox::icon_error, msgbox::ok)
+         << "More than 1GiB of data needed because of parsed width:" << pfm.w << " and height:" << pfm.h)();
+        throw std::runtime_error("input too big");
     }
 
-    vector<int8_t> rgb;
-    rgb.resize(pfm.w * pfm.h * pfm.num_channels());
-    if (pfm.is_half())
-        ispc::ToneAllF16PixelsAndToGamma((uint16_t*)raw.data(), rgb.data(), raw.size() / 2, 1.f);
+    raw.resize(alloc);
+
+    std::cout << "about to read " << alloc << " bytes\n";
+    in->ignore(1);  // jump the last \n after scale_endian
+    *in >> std::noskipws;
+    in->clear();
+    freopen(nullptr, "rb", stdin);  // go in binary mode from here
+    WINONLY(_setmode(fileno(stdin), O_BINARY | O_RDONLY));
+    // read bulk:
+    in->sync();
+    in->read(raw.data(), alloc);
+
+    if (auto cnt = in->gcount(); cnt != alloc)
+        std::cout << "not enough data read (" << cnt << " instead of " << alloc << " expected)\n";
+    else if (std::cin.rdbuf()->in_avail() > 0)
+        std::cout << "remaining data not read " << std::cin.rdbuf()->in_avail() << "\n";
     else
-        ispc::ToneAllF32PixelsAndToGamma((float*)raw.data(), rgb.data(), raw.size() / 4, 1.f);
+        std::cout << "success\n";
+}
 
-    paint::graphics surface(size(pfm.w, pfm.h));
+// Transform the HDR source image to a displayable SDR image
+void raw_to_rgb(pfm_header const& pfm, vector<char> const& raw, vector<int8_t>& rgb /*out*/, app_settings const& state)
+{
+    // perform slow operations (pow, polynomials, divisions, minmax reduce...) using avx512 SIMD
+
+    if (state.tone)
+    {
+        if (state.gamma)
+        {
+            if (pfm.is_half())
+                ispc::ToneAllF16PixelsAndToGamma((uint16_t*)raw.data(), rgb.data(), raw.size() / 2, state.exposure);
+            else
+                ispc::ToneAllF32PixelsAndToGamma((float*)raw.data(), rgb.data(), raw.size() / 4, state.exposure);
+        }
+        else
+        {
+            if (pfm.is_half())
+                ispc::ToneAllF16Pixels((uint16_t*)raw.data(), rgb.data(), raw.size() / 2, state.exposure);
+            else
+                ispc::ToneAllF32Pixels((float*)raw.data(), rgb.data(), raw.size() / 4, state.exposure);
+        }
+    }
+    else
+    {
+        if (state.gamma)
+        {
+            if (pfm.is_half())
+                ispc::GammaAllF16Pixels((uint16_t*)raw.data(), rgb.data(), raw.size() / 2);
+            else
+                ispc::GammaAllF32Pixels((float*)raw.data(), rgb.data(), raw.size() / 4);
+        }
+        else
+        {
+            if (pfm.is_half())
+                ispc::ToSignedRgbAllF16Pixels((uint16_t*)raw.data(), rgb.data(), raw.size() / 2);
+            else
+                ispc::ToSignedRgbAllF32Pixels((float*)raw.data(), rgb.data(), raw.size() / 4);
+        }
+    }
+}
+
+// transfer signed-byte RGB image vector to a GUI-compatible surface
+void rgb_to_graphics(pfm_header const& pfm, vector<int8_t> const& rgb, paint::graphics& surface)
+{
     auto rgb_it = rgb.begin();
     if (pfm.num_channels() == 3)
         for (int y = 0; y < pfm.h; ++y)
@@ -197,8 +226,48 @@ int main(int argc, char* argv[])
                 surface.set_pixel(x, y, {bw, bw, bw});
                 ++rgb_it;
             }
+}
 
-    app_state state;
+std::pair<float, float> min_max(pfm_header const& pfm, vector<char> const& raw)
+{
+    float mi, ma;
+    if (pfm.is_half())
+        ispc::GetMinMaxF16((uint16_t*)raw.data(), raw.size() / 2, mi, ma);
+    else
+        ispc::GetMinMaxF32((float*)raw.data(), raw.size() / 4, mi, ma);
+    return {mi, ma};
+}
+
+int main(int argc, char* argv[])
+{
+    pfm_header pfm;
+    vector<char> raw;
+
+    try
+    {
+        load_pfm_and_raw(argc, argv, pfm, raw);
+    }
+    catch (std::ios_base::failure& e)
+    {
+        (message("Exception in input stream", msgbox::icon_error, msgbox::ok) << e.what())();
+        return 1;
+    }
+    catch (...)
+    {
+        return 2;
+    }
+
+    vector<int8_t> rgb;
+    rgb.resize(pfm.w * pfm.h * pfm.num_channels());
+
+    app_settings state;
+
+    raw_to_rgb(pfm, raw, rgb, state);
+
+    auto [rangemin, rangemax] = min_max(pfm, raw);
+
+    paint::graphics surface(size(pfm.w, pfm.h));
+    rgb_to_graphics(pfm, rgb, surface);
 
     // main window
     form mainwd{API::make_center(std::min(pfm.w, 1600) + 200, std::min(pfm.h, 1000))};
@@ -211,6 +280,8 @@ int main(int argc, char* argv[])
     slider exp{mainwd};
     exp.caption("exposure");
     exp.events().value_changed([&]() { exp.value(); });
+    label info{mainwd};
+    info.caption("range: " + std::to_string(rangemin) + ", " + std::to_string(rangemax));
     panel<false> panelZone{mainwd};
     picture pic{panelZone};
     nana::scroll<false> scrollH{panelZone};
@@ -230,14 +301,16 @@ int main(int argc, char* argv[])
     drawing dr{pic};
     dr.draw([&](paint::graphics& a_g)
             {
-                a_g.bitblt(rectangle({0,0}, min(panelZone.size(), a_g.size())), surface, {(int)scrollH.value(), (int)scrollV.value()});
+                rectangle dst{{0,0}, min(panelZone.size(), a_g.size())};
+                point src{(int)scrollH.value(), (int)scrollV.value()};
+                a_g.bitblt(dst, surface, src);
             });
     scrollH.events().value_changed([&]() { API::refresh_window(pic); });
     scrollV.events().value_changed([&]() { API::refresh_window(pic); });
     place layout{mainwd};
     layout.div("<picdisplay>|200<vert controls arrange=[100,100,100]>");
     layout["picdisplay"] << panelZone;
-    layout["controls"] << act << exp;
+    layout["controls"] << act << exp << info;
     layout.collocate();
 
     mainwd.show();

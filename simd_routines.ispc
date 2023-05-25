@@ -37,8 +37,44 @@ inline float ToneComponentAndToGamma(float comp, float exposure)
     return LinearToGamma(comp);
 }
 
+export void ToSignedRgbAllF32Pixels(uniform float vin[], uniform int8 vout[], uniform int count)
+{
+    foreach (index = 0 ... count)
+    {
+        float v = vin[index];
+        vout[index] = min(255.f, 255 * v) - 128;
+    }
+}
+
+export void ToSignedRgbAllF16Pixels(uniform uint16 vin[], uniform int8 vout[], uniform int count)
+{
+    foreach (index = 0 ... count)
+    {
+        float v = half_to_float(vin[index]);
+        vout[index] = min(255.f, 255 * v) - 128;
+    }
+}
+
+export void GammaAllF32Pixels(uniform float vin[], uniform int8 vout[], uniform int count)
+{
+    foreach (index = 0 ... count)
+    {
+        float v = vin[index];
+        vout[index] = min(255.f, 255 * LinearToGamma(v)) - 128;
+    }
+}
+
+export void GammaAllF16Pixels(uniform uint16 vin[], uniform int8 vout[], uniform int count)
+{
+    foreach (index = 0 ... count)
+    {
+        float v = half_to_float(vin[index]);
+        vout[index] = min(255.f, 255 * LinearToGamma(v)) - 128;
+    }
+}
+
 // expose and downtone to SDR
-export void ToneAllPixels(uniform float vin[], uniform int8 vout[], uniform int count, uniform float exposure)
+export void ToneAllF32Pixels(uniform float vin[], uniform int8 vout[], uniform int count, uniform float exposure)
 {
     foreach (index = 0 ... count)
     {
@@ -73,4 +109,32 @@ export void ToneAllF16PixelsAndToGamma(uniform uint16 vin[], uniform int8 vout[]
         float v = half_to_float(vin[index]);
         vout[index] = min(255.f, 255 * ToneComponentAndToGamma(v, exposure)) - 128;
     }
+}
+
+export void GetMinMaxF32(uniform float vin[], uniform int count, uniform float& minOut, uniform float& maxOut)
+{
+    varying float varMin = 1e34f;
+    varying float varMax = -1e34f;
+    foreach (index = 0 ... count)
+    {
+        float v = vin[index];
+        if (v < varMin) varMin = v;
+        if (v > varMax) varMax = v;
+    }
+    minOut = reduce_min(varMin);
+    maxOut = reduce_max(varMax);
+}
+
+export void GetMinMaxF16(uniform uint16 vin[], uniform int count, uniform float& minOut, uniform float& maxOut)
+{
+    varying float varMin = 1e34f;
+    varying float varMax = -1e34f;
+    foreach (index = 0 ... count)
+    {
+        float v = half_to_float(vin[index]);
+        if (v < varMin) varMin = v;
+        if (v > varMax) varMax = v;
+    }
+    minOut = reduce_min(varMin);
+    maxOut = reduce_max(varMax);
 }
