@@ -69,10 +69,11 @@ msgbox message(std::string const& title, msgbox::icon_t ico, msgbox::button_t bt
 }
 
 // booleans to checkboxes
-void data_bind(checkbox& cb, bool& data)
+template< typename AdditionalCallbackT >
+void data_bind(checkbox& cb, bool& data, AdditionalCallbackT&& tocall)
 {
     cb.check(data);
-    cb.events().click([&]() { data = cb.checked(); });
+    cb.events().checked([&]() { data = cb.checked(); tocall(); });
 }
 
 // using uint8 in ispc causes performance warnings so we use int8 on -128,127 range
@@ -194,22 +195,22 @@ void raw_to_rgb(pfm_header const& pfm, vector<char> const& raw, vector<int8_t>& 
         if (state.gamma)
         {
             if (pfm.is_half())
-                ispc::GammaAllF16Pixels((uint16_t*)raw.data(), rgb.data(), raw.size() / 2);
+                ispc::GammaAllF16Pixels((uint16_t*)raw.data(), rgb.data(), raw.size() / 2, state.exposure);
             else
-                ispc::GammaAllF32Pixels((float*)raw.data(), rgb.data(), raw.size() / 4);
+                ispc::GammaAllF32Pixels((float*)raw.data(), rgb.data(), raw.size() / 4, state.exposure);
         }
         else
         {
             if (pfm.is_half())
-                ispc::ToSignedRgbAllF16Pixels((uint16_t*)raw.data(), rgb.data(), raw.size() / 2);
+                ispc::ToSignedRgbAllF16Pixels((uint16_t*)raw.data(), rgb.data(), raw.size() / 2, state.exposure);
             else
-                ispc::ToSignedRgbAllF32Pixels((float*)raw.data(), rgb.data(), raw.size() / 4);
+                ispc::ToSignedRgbAllF32Pixels((float*)raw.data(), rgb.data(), raw.size() / 4, state.exposure);
         }
     }
 }
 
 // transfer signed-byte RGB image vector to a GUI-compatible surface
-void rgb_to_graphics(pfm_header const& pfm, vector<int8_t> const& rgb, paint::graphics& surface)
+void rgb_to_graphics(pfm_header const& pfm, vector<int8_t> const& rgb, paint::graphics& surface, bool flipy)
 {
     if (pfm.num_channels() == 3)
     {
@@ -217,7 +218,8 @@ void rgb_to_graphics(pfm_header const& pfm, vector<int8_t> const& rgb, paint::gr
         for (int y = 0; y < pfm.h; ++y)
             for (int x = 0; x < pfm.w; ++x)
             {
-                int8_t const* p = &rgb[3 * (y * pfm.w + x)];
+                int realy = flipy ? pfm.h - y - 1 : y;
+                int8_t const* p = &rgb[3 * (realy * pfm.w + x)];
                 surface.set_pixel(x, y, {stou(p[0]), stou(p[1]), stou(p[2])});
             }
     }
@@ -226,7 +228,8 @@ void rgb_to_graphics(pfm_header const& pfm, vector<int8_t> const& rgb, paint::gr
         for (int y = 0; y < pfm.h; ++y)
             for (int x = 0; x < pfm.w; ++x)
             {
-                uint8_t bw{stou(rgb[y * pfm.w + x])};
+                int realy = flipy ? pfm.h - y - 1 : y;
+                uint8_t bw{stou(rgb[realy * pfm.w + x])};
                 surface.set_pixel(x, y, {bw, bw, bw});
             }
     }
@@ -271,7 +274,7 @@ int main(int argc, char* argv[])
     auto [rangemin, rangemax] = min_max(pfm, raw);
 
     paint::graphics surface(size(pfm.w, pfm.h));
-    rgb_to_graphics(pfm, rgb, surface);
+    rgb_to_graphics(pfm, rgb, surface, state.flipy);
 
     // main window
     static const int initial_width_right_pane = 200;
@@ -308,9 +311,6 @@ int main(int argc, char* argv[])
     scrollV.events().value_changed([&]() { API::refresh_window(pic); });
     // control panel zone:
     group opts_gp{mainwd, "Options"};
-    data_bind(opts_gp.add_option("Gamma"), state.gamma);
-    data_bind(opts_gp.add_option("Filmic tone"), state.tone);
-    data_bind(opts_gp.add_option("Flip Y"), state.flipy);
     opts_gp.radio_mode(false);
     panel<false> ctrls{mainwd};
     place ctrlgrid{ctrls};
@@ -352,23 +352,29 @@ int main(int argc, char* argv[])
                 if (quit) return;
             }
             raw_to_rgb(pfm, raw, rgb, state);
-            rgb_to_graphics(pfm, rgb, surface);
+            rgb_to_graphics(pfm, rgb, surface, state.flipy);
             API::refresh_window(pic);
         }
     };
     // use std thread. nana::thread::pool thing is horrendous and super slow. don't use it.
     std::thread worker(image_recomputer);
-
+    auto trigger_recompute = [&]()
+    {
+        {
+            std::lock_guard lk(m);
+            dirty = true;
+        }
+        cv.notify_one();
+    };
     ev_slider.events().value_changed([&]()
                                      {
                                          state.exposure = ev_slider.value() / 100.f;
                                          refresh_curexp_lbl();
-                                         {
-                                             std::lock_guard lk(m);
-                                             dirty = true;
-                                         }
-                                         cv.notify_one();
+                                         trigger_recompute();
                                      });
+    data_bind(opts_gp.add_option("Gamma"), state.gamma, trigger_recompute);
+    data_bind(opts_gp.add_option("Filmic tone"), state.tone, trigger_recompute);
+    data_bind(opts_gp.add_option("Flip Y"), state.flipy, trigger_recompute);
     label info{mainwd};
     info.caption("source range: " + std::to_string(rangemin) + ", " + std::to_string(rangemax));
     place layout{mainwd};

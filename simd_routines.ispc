@@ -23,52 +23,52 @@ inline float LinearToGamma(float linearClr)
     return pow(linearClr, 1/2.2);
 }
 
-inline float ToneComponent(float comp, float exposure)
+static const float whiteScale =  1.0f / (((2 * U2_W * (U2_A * 2 * U2_W + U2_C * U2_B) + U2_D * U2_E) / (2 * U2_W * (U2_A * 2 * U2_W + U2_B) + U2_D * U2_F)) - U2_E / U2_F);
+
+inline float ToneComponent(float comp)
 {
-	comp *= exposure;  // Exposure Adjustment
     float postTone = Uncharted2Tonemap(comp);
-    float whiteScale = 1.0f / Uncharted2Tonemap(U2_W);
     return postTone * whiteScale;
 }
 
-inline float ToneComponentAndToGamma(float comp, float exposure)
+inline float ToneComponentAndToGamma(float comp)
 {
-	comp = ToneComponent(comp, exposure);
+	comp = ToneComponent(comp);
     return LinearToGamma(comp);
 }
 
-export void ToSignedRgbAllF32Pixels(uniform float vin[], uniform int8 vout[], uniform int count)
+export void ToSignedRgbAllF32Pixels(uniform float vin[], uniform int8 vout[], uniform int count, uniform float exposure)
 {
     foreach (index = 0 ... count)
     {
-        float v = vin[index];
+        float v = vin[index] * exposure;
         vout[index] = min(255.f, 255 * v) - 128;
     }
 }
 
-export void ToSignedRgbAllF16Pixels(uniform uint16 vin[], uniform int8 vout[], uniform int count)
+export void ToSignedRgbAllF16Pixels(uniform uint16 vin[], uniform int8 vout[], uniform int count, uniform float exposure)
 {
     foreach (index = 0 ... count)
     {
-        float v = half_to_float(vin[index]);
+        float v = half_to_float(vin[index]) * exposure;
         vout[index] = min(255.f, 255 * v) - 128;
     }
 }
 
-export void GammaAllF32Pixels(uniform float vin[], uniform int8 vout[], uniform int count)
+export void GammaAllF32Pixels(uniform float vin[], uniform int8 vout[], uniform int count, uniform float exposure)
 {
     foreach (index = 0 ... count)
     {
-        float v = vin[index];
+        float v = vin[index] * exposure;
         vout[index] = min(255.f, 255 * LinearToGamma(v)) - 128;
     }
 }
 
-export void GammaAllF16Pixels(uniform uint16 vin[], uniform int8 vout[], uniform int count)
+export void GammaAllF16Pixels(uniform uint16 vin[], uniform int8 vout[], uniform int count, uniform float exposure)
 {
     foreach (index = 0 ... count)
     {
-        float v = half_to_float(vin[index]);
+        float v = half_to_float(vin[index]) * exposure;
         vout[index] = min(255.f, 255 * LinearToGamma(v)) - 128;
     }
 }
@@ -78,8 +78,8 @@ export void ToneAllF32Pixels(uniform float vin[], uniform int8 vout[], uniform i
 {
     foreach (index = 0 ... count)
     {
-        float v = vin[index];
-        vout[index] = min(255.f, 255 * ToneComponent(v, exposure)) - 128;
+        float v = vin[index] * exposure;
+        vout[index] = min(255.f, 255 * ToneComponent(v)) - 128;
     }
 }
 
@@ -87,8 +87,8 @@ export void ToneAllF16Pixels(uniform uint16 vin[], uniform int8 vout[], uniform 
 {
     foreach (index = 0 ... count)
     {
-        float v = half_to_float(vin[index]);
-        vout[index] = min(255.f, 255 * ToneComponent(v, exposure)) - 128;
+        float v = half_to_float(vin[index]) * exposure;
+        vout[index] = min(255.f, 255 * ToneComponent(v)) - 128;
     }
 }
 
@@ -97,8 +97,8 @@ export void ToneAllF32PixelsAndToGamma(uniform float vin[], uniform int8 vout[],
 {
     foreach (index = 0 ... count)
     {
-        float v = vin[index];
-        vout[index] = min(255.f, 255 * ToneComponentAndToGamma(v, exposure)) - 128;
+        float v = vin[index] * exposure;
+        vout[index] = min(255.f, 255 * ToneComponentAndToGamma(v)) - 128;
     }
 }
 
@@ -106,8 +106,8 @@ export void ToneAllF16PixelsAndToGamma(uniform uint16 vin[], uniform int8 vout[]
 {
     foreach (index = 0 ... count)
     {
-        float v = half_to_float(vin[index]);
-        vout[index] = min(255.f, 255 * ToneComponentAndToGamma(v, exposure)) - 128;
+        float v = half_to_float(vin[index]) * exposure;
+        vout[index] = min(255.f, 255 * ToneComponentAndToGamma(v)) - 128;
     }
 }
 
