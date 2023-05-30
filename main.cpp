@@ -69,6 +69,8 @@ msgbox message(std::string const& title, msgbox::icon_t ico, msgbox::button_t bt
 }
 
 // booleans to checkboxes
+// unfortunately nana doesn't appear to use real signal/slot, I haven't found a way to += supplementary callbacks.
+// therefore, we chain callbacks manually
 template< typename AdditionalCallbackT >
 void data_bind(checkbox& cb, bool& data, AdditionalCallbackT&& tocall)
 {
@@ -83,6 +85,7 @@ uint8_t stou(int8_t i)
     return uint8_t((int)i + 128);
 }
 
+// customization point of min for size type
 size min(size const& a, size const& b)
 {
     return {std::min(a.width, b.width), std::min(a.height, b.height)};
@@ -235,6 +238,7 @@ void rgb_to_graphics(pfm_header const& pfm, vector<int8_t> const& rgb, paint::gr
     }
 }
 
+// extract statistics from HDR image
 std::pair<float, float> min_max(pfm_header const& pfm, vector<char> const& raw)
 {
     float mi, ma;
@@ -244,6 +248,40 @@ std::pair<float, float> min_max(pfm_header const& pfm, vector<char> const& raw)
         ispc::GetMinMaxF32((float*)raw.data(), raw.size() / 4, mi, ma);
     return {mi, ma};
 }
+
+// leightweight process control
+struct lwpctl
+{
+    std::mutex m;
+    std::condition_variable cv;
+    bool dirty = false;
+    bool quit = false;
+
+    void wait()
+    {
+        std::unique_lock lk(m);
+        cv.wait(lk, [&] {return dirty || quit; });
+        dirty = false;
+    }
+
+    void trigger_recompute()
+    {
+        {
+            std::lock_guard lk(m);
+            dirty = true;
+        }
+        cv.notify_one();
+    }
+
+    void set_quit()
+    {
+        {
+            std::lock_guard lk(m);
+            quit = true;
+        }
+        cv.notify_one();
+    }
+};
 
 int main(int argc, char* argv[])
 {
@@ -334,64 +372,49 @@ int main(int argc, char* argv[])
     label curexp_lbl{mainwd};
     auto refresh_curexp_lbl = [&]() {curexp_lbl.caption("EV: " + std::to_string(state.exposure)); };
     refresh_curexp_lbl();
+    label activity{mainwd};
 
-    std::mutex m;
-    std::condition_variable cv;
-    bool dirty = false;
-    bool quit = false;
-
+    lwpctl pc;
     // we need a thread because HDC pixel transfer is slow
     auto image_recomputer = [&]()
     {
         for (;;)
         {
-            {
-                std::unique_lock lk(m);
-                cv.wait(lk, [&] {return dirty || quit; });
-                dirty = false;
-                if (quit) return;
-            }
+            pc.wait();
+            if (pc.quit) return;
+            activity.caption("CPU activity: compute...");
             raw_to_rgb(pfm, raw, rgb, state);
+            activity.caption("CPU activity: copy pixels...");
             rgb_to_graphics(pfm, rgb, surface, state.flipy);
+            activity.caption("");
             API::refresh_window(pic);
         }
     };
     // use std thread. nana::thread::pool thing is horrendous and super slow. don't use it.
     std::thread worker(image_recomputer);
-    auto trigger_recompute = [&]()
-    {
-        {
-            std::lock_guard lk(m);
-            dirty = true;
-        }
-        cv.notify_one();
-    };
+
     ev_slider.events().value_changed([&]()
                                      {
                                          state.exposure = ev_slider.value() / 100.f;
                                          refresh_curexp_lbl();
-                                         trigger_recompute();
+                                         pc.trigger_recompute();
                                      });
-    data_bind(opts_gp.add_option("Gamma"), state.gamma, trigger_recompute);
-    data_bind(opts_gp.add_option("Filmic tone"), state.tone, trigger_recompute);
-    data_bind(opts_gp.add_option("Flip Y"), state.flipy, trigger_recompute);
+    data_bind(opts_gp.add_option("Gamma"), state.gamma, [&](){pc.trigger_recompute();});
+    data_bind(opts_gp.add_option("Filmic tone"), state.tone, [&](){pc.trigger_recompute();});
+    data_bind(opts_gp.add_option("Flip Y"), state.flipy, [&](){pc.trigger_recompute();});
     label info{mainwd};
     info.caption("source range: " + std::to_string(rangemin) + ", " + std::to_string(rangemax));
     place layout{mainwd};
-    layout.div("<picdisplay>|200<vert controls arrange=[100,64,24,24]>");
+    layout.div("<picdisplay>|200<vert controls arrange=[100,64,24,24,24]>");
     layout["picdisplay"] << panelZone;
-    layout["controls"] << opts_gp << ctrls << curexp_lbl << info;
+    layout["controls"] << opts_gp << ctrls << curexp_lbl << info << activity;
     layout.collocate();
 
     mainwd.show();
     exec();
 
     // stop the refresher thread otherwise we get an assert in the CRT
-    {
-        std::lock_guard lk(m);
-        quit = true;
-    }
-    cv.notify_one();
+    pc.set_quit();
     worker.join();
 
     return 0;
