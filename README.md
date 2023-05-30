@@ -7,6 +7,8 @@ This software is a C++ desktop app made with Nana++ GUI library.
 It makes use of auto-vectorizing compiler ispc to exploit superscalar AVX512 instructions for tone/exposure updates.  
 It is built with subsystem:console on windows so it can accept piped data to stdin.
 
+![screen capture](sshot.png)
+
 ## Usage:
 
 one argument for file name (or optionally - (dash) to indicate stdin)
