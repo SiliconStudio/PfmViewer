@@ -3,7 +3,7 @@
 PFM stands for Portable FloatMap Image Format, as specified by https://www.pauldebevec.com/Research/HDR/PFM/
 PHM is the half-float variant as used by intel open image denoise library.
 
-This software is a C++ desktop app made with Nana++ GUI library.  
+This software is a minimalist (563 C++/ispc lines) desktop app made with Nana++ GUI library.  
 It makes use of auto-vectorizing compiler ispc to exploit superscalar AVX512 instructions for tone/exposure updates.  
 It is built with subsystem:console on windows so it can accept piped data to stdin.
 
@@ -26,8 +26,11 @@ Use that snippet to output (usually linear space) 16bits-float-RGB (half3) image
     f << "-1.0\n";  // scale and endian (neg=little)
     f.write((const char*)rowmajorHalfRgbImageData, resolutionX * resolutionY * 3 * 2);
 ```
-
-Or `PF` for 32bits floats. `Pf` for monochrome. You get the idea.
+magic legend:  
+`PF`=`float3`  
+`Pf`=`float`  
+`PH`=`half3`  
+`Ph`=`half`
 
 ## Build:
 
