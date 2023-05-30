@@ -16,7 +16,7 @@ If no arguments: it will probe for stdin pending data, or open a filebox dialog 
 
 ## Create .pfm
 
-Use that snippet to output (usually linear space) float-RGB images from your software:
+Use that snippet to output (usually linear space) 16bits-float-RGB (half3) images from your software:
 
 ```cpp
     // export to PHM:
@@ -33,9 +33,9 @@ Or `PF` for 32bits floats. `Pf` for monochrome. You get the idea.
 
  - install ispc (version 1.18.0 was used for dev) https://ispc.github.io/downloads.html
 if you have a different version (or unorthodox install path), tune the CMakeLists.txt to adjust the fallback path `set (ISPC_EXECUTABLE "$ENV{ProgramFiles}/ISPC/ispc-v1.18.0-windows/bin/ispc.exe")` to your version and actual installation path.
- - install cmake 3.15 and newer
+ - install cmake 3.15 or newer
  - Download ninja-win.zip from https://github.com/ninja-build/ninja/releases and put ninja.exe in a PATH accessible folder.
- - decompress the nina.zip in place, so that you have a "nana" folder which immediately contains the .hpp.  
+ - decompress the nana.zip in place, so that you have a "nana" folder which immediately contains the .hpp.
  The release .lib for visual studio toolset 142 is included in the zip
  - open a "x64 visual studio tool console" (or execute vcvars64.bat)  
 then call  
